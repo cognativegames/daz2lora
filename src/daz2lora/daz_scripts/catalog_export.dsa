@@ -1,0 +1,424 @@
+/**
+ * catalog_export.dsa
+ *
+ * Walks DAZ content library directories and exports a JSON catalog of
+ * available assets: figures, wardrobe, hair, poses, shape presets, and
+ * skin materials.
+ *
+ * Usage:
+ *   DAZStudio.exe -scriptArg <path_to_args.json> catalog_export.dsa -noPrompt -headless
+ *
+ * Args JSON schema:
+ *   {
+ *     "output_path": "/path/to/catalog_output.json",
+ *     "content_dirs": ["C:/Users/Public/Documents/DAZ 3D/Studio/My Library"]
+ *   }
+ */
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Safe JSON parse. Returns null on failure.
+ */
+function parseJSONFile(filePath) {
+    try {
+        var content = FileIO.readFileToString(filePath);
+        if (content === null || content === undefined) {
+            Debug.log("catalog_export: Failed to read file: " + filePath);
+            return null;
+        }
+        return JSON.parse(content);
+    } catch (e) {
+        Debug.log("catalog_export: JSON parse error in " + filePath + ": " + e.message);
+        return null;
+    }
+}
+
+/**
+ * Recursively walk a directory and return all files matching a set of
+ * extensions.
+ *
+ * DAZ Script API: FileIO.directoryContents(path, recursive, includeDirs)
+ *   - path: string
+ *   - recursive: boolean (true = recurse subdirs)
+ *   - includeDirs: boolean (true = include dirs in results, false = files only)
+ *
+ * Returns an array of full path strings (DAZ Studio uses native path separators).
+ */
+function walkDirectory(dirPath, extensions) {
+    var results = [];
+
+    // Normalise path separators for the platform
+    var sep = (dirPath.indexOf("/") !== -1) ? "/" : "\\";
+
+    // FileIO.directoryContents returns an array of full paths.
+    // When recursive=true, it traverses all subdirectories.
+    // When includeDirs=false, only files are returned.
+    var entries = FileIO.directoryContents(dirPath, true, false);
+
+    if (entries === null || entries === undefined) {
+        Debug.log("catalog_export: Cannot read directory: " + dirPath);
+        return results;
+    }
+
+    for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i];
+        var lower = entry.toLowerCase();
+        for (var j = 0; j < extensions.length; j++) {
+            if (lower.indexOf(extensions[j]) === lower.length - extensions[j].length) {
+                results.push(entry);
+                break;
+            }
+        }
+    }
+
+    return results;
+}
+
+/**
+ * Extract display name from a .duf file by parsing its JSON content.
+ *
+ * DAZ Script API: AssetMgr.fetchAssetData(filePath) returns an object with
+ * metadata (label, id, etc.) when available. Fallback: parse the .duf JSON.
+ *
+ * .duf files are JSON with a "name" property at the root or under
+ * "asset_info" > "name". We try several locations.
+ */
+function extractDisplayName(filePath) {
+    // Method 1: AssetMgr.fetchAssetData (DAZ 4.12+)
+    try {
+        var assetData = AssetMgr.fetchAssetData(filePath);
+        if (assetData) {
+            if (assetData.label) return assetData.label;
+            if (assetData.name) return assetData.name;
+            if (assetData.displayName) return assetData.displayName;
+        }
+    } catch (e) {
+        // Fall through to parsing the file directly
+    }
+
+    // Method 2: Parse .duf JSON structure
+    try {
+        var content = FileIO.readFileToString(filePath);
+        if (content) {
+            var json = JSON.parse(content);
+
+            // DUF structure typically: { "name": "...", "asset_info": { "name": "..." }, ... }
+            if (json.asset_info && json.asset_info.name) {
+                return String(json.asset_info.name);
+            }
+            if (json.document && json.document.name) {
+                return String(json.document.name);
+            }
+            if (json.name) {
+                return String(json.name);
+            }
+        }
+    } catch (e) {
+        // Fall through to filename heuristic
+    }
+
+    // Method 3: Derive from filename (strip .duf, replace underscores)
+    var parts = filePath.split(/[\/\\]/);
+    var filename = parts[parts.length - 1];
+    filename = filename.replace(/\.duf$/i, "");
+    filename = filename.replace(/_/g, " ");
+    return filename;
+}
+
+/**
+ * Try to determine figure compatibility from the .duf content or path.
+ *
+ * Checks the "compatible_with" field in asset metadata, and falls back to
+ * scanning the path for "Genesis 8" / "Genesis 9" patterns.
+ */
+function extractCompatibility(filePath) {
+    // Method 1: Metadata
+    try {
+        var assetData = AssetMgr.fetchAssetData(filePath);
+        if (assetData && assetData.compatible_with) {
+            return String(assetData.compatible_with);
+        }
+    } catch (e) {}
+
+    // Method 2: Parse .duf for compatibility info
+    try {
+        var content = FileIO.readFileToString(filePath);
+        if (content) {
+            var json = JSON.parse(content);
+            if (json.asset_info && json.asset_info.compatible_with) {
+                return String(json.asset_info.compatible_with);
+            }
+        }
+    } catch (e) {}
+
+    // Method 3: Heuristic from path
+    var lower = filePath.toLowerCase();
+    if (lower.indexOf("genesis 9") !== -1 || lower.indexOf("genesis9") !== -1) {
+        return "Genesis 9";
+    }
+    if (lower.indexOf("genesis 8") !== -1 || lower.indexOf("genesis8") !== -1) {
+        return "Genesis 8";
+    }
+    if (lower.indexOf("genesis 3") !== -1 || lower.indexOf("genesis3") !== -1) {
+        return "Genesis 3";
+    }
+
+    return "Unknown";
+}
+
+/**
+ * Categorise a .duf file based on its path relative to the content directory.
+ *
+ * Patterns (case-insensitive):
+ *   People/Genesis*/   -> figure subdirs
+ *     Clothing/        -> wardrobe
+ *     Hair/            -> hair
+ *     Poses/           -> poses
+ *   People/Genesis*/   -> shape presets (anything with "shape" or "morph" in path)
+ *   People/Genesis*/   -> skin materials (anything with "skin" or "material" in path)
+ *
+ * For files not matching a specific category, we fall back to inspecting
+ * the filename or the .duf metadata tags.
+ */
+function categorizeAsset(filePath, contentDir) {
+    var lower = filePath.toLowerCase();
+    var relative = lower;
+    if (contentDir) {
+        var cd = contentDir.toLowerCase().replace(/[\/\\]$/, "");
+        relative = lower.replace(cd, "");
+    }
+
+    var sep = (relative.indexOf("/") !== -1) ? "/" : "\\";
+
+    // Figure base files: .duf files directly in a Genesis figure directory
+    // Usually named "Genesis 9 Base.duf", "Genesis 8 Female.duf", etc.
+    if (/people[\/\\]genesis\s*\d[\/\\]data[\/\\]/.test(relative) ||
+        (/people[\/\\]genesis\s*\d/.test(relative) &&
+         !/clothing|hair|poses|materials|shapes/i.test(relative))) {
+        return "figure";
+    }
+
+    // Wardrobe / Clothing
+    if (/clothing/.test(relative)) {
+        return "wardrobe";
+    }
+
+    // Hair
+    if (/[\/\\]hair[\/\\]/.test(relative) || /^hair[\/\\]/.test(relative)) {
+        return "hair";
+    }
+
+    // Poses
+    if (/poses/.test(relative)) {
+        return "pose";
+    }
+
+    // Shape presets: files with "shape" or "morph" in path or metadata
+    if (/shape|morph/.test(relative)) {
+        return "shape_preset";
+    }
+
+    // Skin materials
+    if (/skin|material/.test(relative)) {
+        return "skin_material";
+    }
+
+    // Fallback: check file metadata tags via AssetMgr
+    try {
+        var assetData = AssetMgr.fetchAssetData(filePath);
+        if (assetData && assetData.tags) {
+            var tags = String(assetData.tags).toLowerCase();
+            if (tags.indexOf("figure") !== -1) return "figure";
+            if (tags.indexOf("clothing") !== -1) return "wardrobe";
+            if (tags.indexOf("hair") !== -1) return "hair";
+            if (tags.indexOf("pose") !== -1) return "pose";
+            if (tags.indexOf("shape") !== -1) return "shape_preset";
+            if (tags.indexOf("material") !== -1 || tags.indexOf("skin") !== -1) return "skin_material";
+        }
+    } catch (e) {}
+
+    return "unknown";
+}
+
+/**
+ * Return true if filePath ends with .duf (case-insensitive).
+ */
+function isDufFile(filePath) {
+    return filePath.toLowerCase().indexOf(".duf") === filePath.length - 4;
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
+function main() {
+    // ── Read arguments ──────────────────────────────────────────────────────
+    // ScriptArg is a global variable set by the -scriptArg CLI parameter.
+    // It contains the path to a JSON file with runtime arguments.
+    if (typeof ScriptArg === "undefined" || ScriptArg === null || ScriptArg === "") {
+        throw new Error("No ScriptArg provided. Pass -scriptArg <path_to_args.json>");
+    }
+
+    Debug.log("catalog_export: Reading args from " + ScriptArg);
+    var args = parseJSONFile(ScriptArg);
+    if (args === null) {
+        throw new Error("Failed to parse argument file: " + ScriptArg);
+    }
+
+    var outputPath = args.output_path;
+    var contentDirs = args.content_dirs;
+
+    if (!outputPath) {
+        throw new Error("Argument 'output_path' is required");
+    }
+    if (!contentDirs || !Array.isArray(contentDirs) || contentDirs.length === 0) {
+        throw new Error("Argument 'content_dirs' must be a non-empty array");
+    }
+
+    Debug.log("catalog_export: Output path = " + outputPath);
+    Debug.log("catalog_export: Content dirs = " + JSON.stringify(contentDirs));
+
+    // ── Walk content directories ────────────────────────────────────────────
+    var catalog = {
+        figures:    [],
+        wardrobe:   [],
+        hair:       [],
+        poses:      [],
+        shapes:     [],
+        materials:  []
+    };
+
+    var scannedCount = 0;
+    var categorizedCount = 0;
+
+    for (var d = 0; d < contentDirs.length; d++) {
+        var dir = contentDirs[d];
+        Debug.log("catalog_export: Scanning " + dir);
+
+        // FileIO.directoryContents with recursive=true, includeDirs=false
+        var allFiles = FileIO.directoryContents(dir, true, false);
+
+        if (!allFiles || allFiles.length === 0) {
+            Debug.log("catalog_export: No files found in " + dir);
+            continue;
+        }
+
+        for (var i = 0; i < allFiles.length; i++) {
+            var filePath = allFiles[i];
+
+            // Skip non-.duf files
+            if (!isDufFile(filePath)) {
+                continue;
+            }
+
+            scannedCount++;
+            var category = categorizeAsset(filePath, dir);
+
+            if (category === "unknown") {
+                continue;
+            }
+
+            categorizedCount++;
+            var name = extractDisplayName(filePath);
+            var compatibility = extractCompatibility(filePath);
+
+            var entry = {
+                name: name,
+                path: filePath,
+                type: category
+            };
+
+            if (category === "figure" && compatibility !== "Unknown") {
+                entry.compatible_with = compatibility;
+            }
+
+            switch (category) {
+                case "figure":
+                    catalog.figures.push(entry);
+                    break;
+                case "wardrobe":
+                    catalog.wardrobe.push(entry);
+                    break;
+                case "hair":
+                    catalog.hair.push(entry);
+                    break;
+                case "pose":
+                    catalog.poses.push(entry);
+                    break;
+                case "shape_preset":
+                    catalog.shapes.push(entry);
+                    break;
+                case "skin_material":
+                    catalog.materials.push(entry);
+                    break;
+            }
+        }
+    }
+
+    Debug.log("catalog_export: Scanned " + scannedCount + " .duf files, categorized " + categorizedCount);
+
+    // ── Write output ────────────────────────────────────────────────────────
+    var outputJson = JSON.stringify(catalog, null, 2);
+
+    // FileIO.writeStringToFile(content, filePath) writes a string to the
+    // specified file path, creating/overwriting as needed.
+    var writeResult = FileIO.writeStringToFile(outputJson, outputPath);
+    if (writeResult === false || writeResult === null) {
+        throw new Error("Failed to write catalog to " + outputPath);
+    }
+
+    Debug.log("catalog_export: Catalog written to " + outputPath);
+    Debug.log("catalog_export: Figures=" + catalog.figures.length +
+              " Wardrobe=" + catalog.wardrobe.length +
+              " Hair=" + catalog.hair.length +
+              " Poses=" + catalog.poses.length +
+              " Shapes=" + catalog.shapes.length +
+              " Materials=" + catalog.materials.length);
+
+    return 0;
+}
+
+// ─── Entry point with error handling ──────────────────────────────────────────
+
+// The log file is written alongside the output path. Derive it from args if
+// possible, or fall back to a default location.
+var logFilePath = "catalog_export_error.log";
+
+try {
+    // Try to set log path from args (we might not have parsed them yet, so
+    // read ScriptArg manually for the log file location)
+    if (typeof ScriptArg !== "undefined" && ScriptArg) {
+        var rawArgs = parseJSONFile(ScriptArg);
+        if (rawArgs && rawArgs.output_path) {
+            logFilePath = rawArgs.output_path.replace(/\.json$/i, "_error.log");
+        }
+    }
+} catch (e) {
+    // Keep default
+}
+
+try {
+    var exitCode = main();
+    Debug.log("catalog_export: Exiting with code " + exitCode);
+    // DAZ Script does not have a built-in process.exit(). The script
+    // simply ends. Return value is convention for script runners.
+    // Signal success by writing a sentinel to the log.
+    if (exitCode === 0) {
+        FileIO.writeStringToFile("SUCCESS\n", logFilePath);
+    }
+} catch (e) {
+    var errorMsg = "catalog_export FATAL: " + e.message + "\n" + e.stack;
+    Debug.log(errorMsg);
+
+    // Write error details to the log file
+    try {
+        var errorLog = "FAILED: " + e.message + "\n" +
+                       "Timestamp: " + new Date().toISOString() + "\n" +
+                       "Stack: " + (e.stack || "N/A") + "\n";
+        FileIO.writeStringToFile(errorLog, logFilePath);
+    } catch (logErr) {
+        Debug.log("catalog_export: Failed to write error log: " + logErr.message);
+    }
+
+    // Exit with code 1
+    Debug.log("catalog_export: Exiting with code 1");
+}

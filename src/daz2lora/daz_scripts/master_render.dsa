@@ -1,0 +1,1024 @@
+/**
+ * master_render.dsa
+ *
+ * Main render loop for DAZ-to-LoRA. Accepts a JSON job file via ScriptArg
+ * and executes unattended renders: loads a figure, applies looks (wardrobe,
+ * hair, poses), iterates camera and lighting profiles, and saves renders.
+ *
+ * Usage:
+ *   DAZStudio.exe -scriptArg <path_to_job.json> master_render.dsa -noPrompt -headless
+ *
+ * Job file schema: (see accompanying README or type definitions)
+ */
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Camera Definitions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Hardcoded camera presets.
+ * Each entry specifies position (x, y, z) and target (x, y, z).
+ * Units are DAZ Studio scene units (centimeters).
+ *
+ * DAZ Script API for cameras:
+ *   Scene.createCamera(name)           -> Camera object
+ *   Camera.setPosition(x, y, z)        -> sets world-space position
+ *   Camera.setTarget(x, y, z)          -> sets look-at target
+ *   Camera.setFocalLength(mm)          -> sets focal length
+ *   Camera.setActive()                 -> makes this the active view
+ */
+var HARDCODED_CAMERAS = {
+    portrait_close: {
+        label: "Portrait Close",
+        position: { x: 0, y: 0, z: 60 },
+        target:   { x: 0, y: 10, z: 0 },
+        focalLength: 85
+    },
+    half_body: {
+        label: "Half Body",
+        position: { x: 0, y: 0, z: 120 },
+        target:   { x: 0, y: 0, z: 0 },
+        focalLength: 50
+    },
+    full_body_front: {
+        label: "Full Body Front",
+        position: { x: 0, y: 0, z: 200 },
+        target:   { x: 0, y: 0, z: 0 },
+        focalLength: 35
+    },
+    full_body_3q: {
+        label: "Full Body 3-Quarter",
+        position: { x: 140, y: 0, z: 140 },
+        target:   { x: 0, y: 0, z: 0 },
+        focalLength: 35
+    },
+    full_body_profile: {
+        label: "Full Body Profile",
+        position: { x: 200, y: 0, z: 0 },
+        target:   { x: 0, y: 0, z: 0 },
+        focalLength: 35
+    },
+    full_body_low_angle: {
+        label: "Full Body Low Angle",
+        position: { x: 0, y: -40, z: 140 },
+        target:   { x: 0, y: 20, z: 0 },
+        focalLength: 35
+    },
+    full_body_high_angle: {
+        label: "Full Body High Angle",
+        position: { x: 0, y: 60, z: 260 },
+        target:   { x: 0, y: -10, z: 0 },
+        focalLength: 35
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Lighting Definitions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Hardcoded lighting rigs.
+ * Each rig is an array of light definitions.
+ *
+ * DAZ Script API for lights:
+ *   Scene.createLight(type, name)      -> Light object
+ *   Light.setPosition(x, y, z)
+ *   Light.setIntensity(value)          -> 0-100 or percentage
+ *   Light.setColor(r, g, b)            -> RGB 0-1 range
+ *   Light.setRotation(x, y, z)
+ *   Light.setShadow(on/off)
+ *   Light.setType("point"|"spot"|"distant"|"environment")
+ *
+ * NOTE: DAZ Studio lighting API varies. Some versions use Light.setLightType(),
+ * Light.setEnable(), etc. We use the most common API calls and provide fallbacks.
+ */
+var HARDCODED_LIGHTING = {
+    studio_3point: {
+        label: "Studio 3-Point",
+        lights: [
+            {
+                name: "Key",
+                type: "distant",
+                position: { x: -100, y: 80, z: 60 },
+                intensity: 80,
+                color: { r: 1.0, g: 0.98, b: 0.95 },
+                rotation: { x: 45, y: -30, z: 0 }
+            },
+            {
+                name: "Fill",
+                type: "distant",
+                position: { x: 80, y: 40, z: 80 },
+                intensity: 40,
+                color: { r: 0.95, g: 0.97, b: 1.0 },
+                rotation: { x: 15, y: 20, z: 0 }
+            },
+            {
+                name: "Rim",
+                type: "distant",
+                position: { x: 0, y: 100, z: -100 },
+                intensity: 60,
+                color: { r: 1.0, g: 1.0, b: 1.0 },
+                rotation: { x: 30, y: 180, z: 0 }
+            }
+        ]
+    },
+    soft_outdoor_hdri: {
+        label: "Soft Outdoor HDRI",
+        lights: [
+            {
+                name: "Sun Key",
+                type: "distant",
+                position: { x: -80, y: 120, z: 40 },
+                intensity: 90,
+                color: { r: 1.0, g: 0.95, b: 0.85 },
+                rotation: { x: 60, y: -40, z: 0 }
+            },
+            {
+                name: "Sky Fill",
+                type: "distant",
+                position: { x: 0, y: 150, z: 0 },
+                intensity: 30,
+                color: { r: 0.8, g: 0.85, b: 1.0 },
+                rotation: { x: 90, y: 0, z: 0 }
+            }
+        ]
+    },
+    dramatic_rim: {
+        label: "Dramatic Rim",
+        lights: [
+            {
+                name: "Rim Strong",
+                type: "spot",
+                position: { x: 0, y: 60, z: -120 },
+                intensity: 100,
+                color: { r: 1.0, g: 1.0, b: 1.0 },
+                rotation: { x: 20, y: 0, z: 0 }
+            },
+            {
+                name: "Fill Weak",
+                type: "distant",
+                position: { x: 80, y: 20, z: 80 },
+                intensity: 15,
+                color: { r: 0.6, g: 0.6, b: 0.7 },
+                rotation: { x: 5, y: 30, z: 0 }
+            }
+        ]
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Parse a JSON file safely. Returns null on failure.
+ */
+function parseJSONFile(filePath) {
+    try {
+        var content = FileIO.readFileToString(filePath);
+        if (content === null || content === undefined) {
+            Debug.log("master_render: Failed to read file: " + filePath);
+            return null;
+        }
+        return JSON.parse(content);
+    } catch (e) {
+        Debug.log("master_render: JSON parse error in " + filePath + ": " + e.message);
+        return null;
+    }
+}
+
+/**
+ * Write a string to a file. Returns true on success.
+ */
+function writeFile(content, filePath) {
+    // FileIO.writeStringToFile(content, path) writes text and returns
+    // true on success in some API versions, or the file path on success
+    // in others. We handle both.
+    try {
+        var result = FileIO.writeStringToFile(content, filePath);
+        // In DAZ Studio 4.15+, writeStringToFile returns the file path on success.
+        // In some older versions it returns true/false.
+        if (result !== false && result !== null) {
+            return true;
+        }
+        return false;
+    } catch (e) {
+        Debug.log("master_render: File write error: " + e.message);
+        return false;
+    }
+}
+
+/**
+ * Append a line to the progress log.
+ * Uses FileIO.readFileToString + write to append (DAZ Script doesn't have
+ * a built-in append-to-file in all versions).
+ */
+function appendProgressLog(logPath, line) {
+    try {
+        var existing = "";
+        try {
+            var content = FileIO.readFileToString(logPath);
+            if (content !== null) {
+                existing = content;
+                if (existing.length > 0 && existing.charAt(existing.length - 1) !== "\n") {
+                    existing += "\n";
+                }
+            }
+        } catch (readErr) {
+            // File doesn't exist yet; start fresh
+        }
+
+        var timestamp = new Date().toISOString();
+        var fullLine = line + "\t" + timestamp + "\n";
+        existing += fullLine;
+
+        return writeFile(existing, logPath);
+    } catch (e) {
+        Debug.log("master_render: Failed to write progress log: " + e.message);
+        return false;
+    }
+}
+
+/**
+ * Get current timestamp as ISO string.
+ */
+function timestamp() {
+    return new Date().toISOString();
+}
+
+/**
+ * Load a figure preset (.duf) into the scene.
+ *
+ * DAZ Script API:
+ *   Scene.load(filePath)        -> loads a file into the scene, returns the loaded node(s)
+ *   Scene.getPrimaryFigure()    -> returns the main Figure node in the scene
+ *   Figure.applyPreset(path)    -> applies a preset file to the figure
+ *
+ * Scene.load() is the most straightforward for figure loading.
+ * For applying shape presets and materials, Figure.applyPreset() is used.
+ */
+function loadFigure(assetPath) {
+    Debug.log("master_render: Loading figure from " + assetPath);
+
+    // Scene.load() loads a file into the scene and returns the loaded
+    // DzNode or array of nodes. For .duf figure files, it returns the
+    // Figure node(s).
+    var loaded = Scene.load(assetPath);
+    if (loaded === null || loaded === undefined) {
+        throw new Error("Failed to load figure: " + assetPath);
+    }
+
+    // Wait for scene to settle (DAZ sometimes needs a moment for assets to resolve)
+    // DAZ Script API: Scene.endExecution() or similar may be needed.
+    // In headless mode, Scene.update() can help ensure the figure is ready.
+    try {
+        Scene.update();
+    } catch (e) {
+        // Some versions don't have Scene.update(); ignore
+    }
+
+    var figure = Scene.getPrimaryFigure();
+    if (figure === null || figure === undefined) {
+        throw new Error("No primary figure found after loading: " + assetPath);
+    }
+
+    Debug.log("master_render: Figure loaded: " + figure.getName());
+    return figure;
+}
+
+/**
+ * Apply a preset (shape, material, pose) to a figure.
+ *
+ * Figure.applyPreset(presetPath) loads and applies the preset file to the
+ * figure. Works for shapes (.duf), materials (.duf), and poses (.duf).
+ */
+function applyPresetToFigure(figure, presetPath, label) {
+    if (!presetPath || presetPath === "") {
+        Debug.log("master_render: No " + label + " preset specified, skipping");
+        return;
+    }
+
+    Debug.log("master_render: Applying " + label + ": " + presetPath);
+
+    try {
+        // Figure.applyPreset() applies a preset file to the figure.
+        // Returns true on success in most API versions.
+        var result = figure.applyPreset(presetPath);
+        if (result === false || result === null) {
+            Debug.log("master_render: " + label + " applyPreset returned false for: " + presetPath);
+        }
+
+        // Allow scene to update
+        try { Scene.update(); } catch (e) {}
+    } catch (e) {
+        Debug.log("master_render: Error applying " + label + " '" + presetPath + "': " + e.message);
+        throw e;
+    }
+}
+
+/**
+ * Create a camera node programmatically.
+ *
+ * DAZ Script API:
+ *   Scene.createCamera(name)       -> Camera object
+ *   Camera.setPosition(x, y, z)
+ *   Camera.setTarget(x, y, z)
+ *   Camera.setFocalLength(mm)
+ *
+ * Returns the created Camera object.
+ */
+function createCameraNode(cameraId, camDef) {
+    Debug.log("master_render: Creating camera: " + cameraId);
+
+    var camera = Scene.createCamera(cameraId);
+    if (camera === null || camera === undefined) {
+        throw new Error("Failed to create camera: " + cameraId);
+    }
+
+    // Set position and target
+    camera.setPosition(camDef.position.x, camDef.position.y, camDef.position.z);
+    camera.setTarget(camDef.target.x, camDef.target.y, camDef.target.z);
+
+    // Set focal length if specified
+    if (camDef.focalLength) {
+        try {
+            camera.setFocalLength(camDef.focalLength);
+        } catch (e) {
+            Debug.log("master_render: setFocalLength not supported, skipping");
+        }
+    }
+
+    Debug.log("master_render: Camera " + cameraId + " created at (" +
+              camDef.position.x + ", " + camDef.position.y + ", " +
+              camDef.position.z + ")");
+    return camera;
+}
+
+/**
+ * Create a lighting rig programmatically.
+ *
+ * DAZ Script API:
+ *   Scene.createLight(type, name)     -> Light object (type is "distant", "point", "spot", "environment")
+ *   Light.setPosition(x, y, z)
+ *   Light.setIntensity(value)         -> 0-100 range
+ *   Light.setColor(r, g, b)           -> 0-1 RGB
+ *   Light.setRotation(x, y, z)
+ *
+ * NOTE: Some API versions use Light.setLightType(), Light.setEnable(), etc.
+ * We use the most portable calls.
+ */
+function createLightingRig(rigId, rigDef) {
+    Debug.log("master_render: Creating lighting rig: " + rigId);
+
+    var createdLights = [];
+
+    for (var i = 0; i < rigDef.lights.length; i++) {
+        var lightDef = rigDef.lights[i];
+        var lightName = rigId + "_" + lightDef.name;
+
+        try {
+            // Scene.createLight(type, name) - type is a string like "distant"
+            var light = Scene.createLight(lightDef.type, lightName);
+            if (light === null || light === undefined) {
+                Debug.log("master_render: Failed to create light: " + lightName);
+                continue;
+            }
+
+            // Position
+            if (lightDef.position) {
+                light.setPosition(lightDef.position.x, lightDef.position.y, lightDef.position.z);
+            }
+
+            // Intensity (0-100)
+            if (lightDef.intensity !== undefined) {
+                try {
+                    light.setIntensity(lightDef.intensity);
+                } catch (e) {
+                    Debug.log("master_render: setIntensity not supported on " + lightName);
+                }
+            }
+
+            // Color (RGB 0-1)
+            if (lightDef.color) {
+                try {
+                    light.setColor(lightDef.color.r, lightDef.color.g, lightDef.color.b);
+                } catch (e) {
+                    Debug.log("master_render: setColor not supported on " + lightName);
+                }
+            }
+
+            // Rotation
+            if (lightDef.rotation) {
+                try {
+                    light.setRotation(lightDef.rotation.x, lightDef.rotation.y, lightDef.rotation.z);
+                } catch (e) {
+                    Debug.log("master_render: setRotation not supported on " + lightName);
+                }
+            }
+
+            createdLights.push(light);
+            Debug.log("master_render: Light " + lightName + " created");
+        } catch (e) {
+            Debug.log("master_render: Error creating light " + lightName + ": " + e.message);
+        }
+    }
+
+    return createdLights;
+}
+
+/**
+ * Remove (delete) all items of a given type from the scene.
+ * Used for clearing wardrobe between looks.
+ *
+ * DAZ Script API:
+ *   Scene.getNumNodes() / Scene.getNode(index)   -> iterate scene nodes
+ *   Scene.deleteNode(node)                        -> remove a node
+ *   Node.hide()                                   -> hide instead of delete (safer)
+ *
+ * We prefer hide() over deleteNode() since deleting can cause issues with
+ * references. But for wardrobe, deletion is fine since it's re-loaded per look.
+ */
+function clearWardrobe() {
+    Debug.log("master_render: Clearing wardrobe from scene");
+
+    try {
+        var numNodes = Scene.getNumNodes();
+        var nodesToRemove = [];
+
+        for (var i = 0; i < numNodes; i++) {
+            var node = Scene.getNode(i);
+            if (node === null || node === undefined) continue;
+
+            var nodeName = node.getName() || "";
+            var lower = nodeName.toLowerCase();
+
+            // We identify wardrobe nodes by checking if they were loaded as
+            // clothing items. In practice, DAZ nodes have types. We check:
+            // 1. Name contains "clothing", "shirt", "pants", "skirt", "jacket", "dress", "shoes"
+            // 2. Or the node type is a wearable
+            // This is a heuristic; production code would track loaded nodes explicitly.
+            var type = "";
+            try { type = String(node.getType()); } catch (e) {}
+
+            if (lower.indexOf("clothing") !== -1 ||
+                lower.indexOf("shirt") !== -1 ||
+                lower.indexOf("pants") !== -1 ||
+                lower.indexOf("skirt") !== -1 ||
+                lower.indexOf("jacket") !== -1 ||
+                lower.indexOf("dress") !== -1 ||
+                lower.indexOf("shoes") !== -1 ||
+                lower.indexOf("wearable") !== -1 ||
+                type.indexOf("Wearable") !== -1) {
+                nodesToRemove.push(node);
+            }
+        }
+
+        // Remove items in reverse order to avoid index shifting issues
+        for (var j = nodesToRemove.length - 1; j >= 0; j--) {
+            try {
+                Scene.deleteNode(nodesToRemove[j]);
+            } catch (e) {
+                Debug.log("master_render: Failed to delete node: " + e.message);
+            }
+        }
+
+        Debug.log("master_render: Cleared " + nodesToRemove.length + " wardrobe items");
+
+        // Also keep a running list of hair nodes to clear
+        var hairNodes = [];
+        for (var k = 0; k < numNodes; k++) {
+            var n = Scene.getNode(k);
+            if (n === null || n === undefined) continue;
+            var nn = n.getName() || "";
+            var nl = nn.toLowerCase();
+            if (nl.indexOf("hair") !== -1) {
+                hairNodes.push(n);
+            }
+        }
+        for (var h = hairNodes.length - 1; h >= 0; h--) {
+            try {
+                Scene.deleteNode(hairNodes[h]);
+            } catch (e) {
+                Debug.log("master_render: Failed to delete hair node: " + e.message);
+            }
+        }
+        Debug.log("master_render: Cleared " + hairNodes.length + " hair items");
+
+        try { Scene.update(); } catch (e) {}
+    } catch (e) {
+        Debug.log("master_render: Error during wardrobe cleanup: " + e.message);
+    }
+}
+
+/**
+ * Apply a wardrobe asset (clothing .duf) to the scene.
+ * After loading, auto-fit it to the primary figure.
+ *
+ * Scene.load() loads the asset. DAZ auto-fits clothing if the figure is
+ * already in the scene. We call Figure.fitWearable() if available.
+ */
+function applyWardrobe(assetPath, figure) {
+    Debug.log("master_render: Loading wardrobe: " + assetPath);
+
+    var loaded = Scene.load(assetPath);
+    if (loaded === null || loaded === undefined) {
+        Debug.log("master_render: Failed to load wardrobe: " + assetPath);
+        return;
+    }
+
+    // Auto-fit to figure if the API supports it
+    if (figure && figure.fitWearable) {
+        try {
+            // Figure.fitWearable(node) - fits a wearable item to the figure
+            if (Array.isArray(loaded)) {
+                for (var i = 0; i < loaded.length; i++) {
+                    figure.fitWearable(loaded[i]);
+                }
+            } else {
+                figure.fitWearable(loaded);
+            }
+        } catch (e) {
+            Debug.log("master_render: fitWearable failed (may auto-fit anyway): " + e.message);
+        }
+    }
+
+    try { Scene.update(); } catch (e) {}
+}
+
+/**
+ * Select a camera by name (make it the active camera).
+ */
+function selectCamera(cameraId) {
+    Debug.log("master_render: Selecting camera: " + cameraId);
+
+    // Try to find the camera by name in the scene
+    var numNodes = Scene.getNumNodes();
+    for (var i = 0; i < numNodes; i++) {
+        var node = Scene.getNode(i);
+        if (node === null || node === undefined) continue;
+
+        var nodeName = "";
+        try { nodeName = node.getName(); } catch (e) {}
+
+        if (nodeName === cameraId) {
+            try {
+                node.setActive();
+                Debug.log("master_render: Camera set active: " + cameraId);
+                return true;
+            } catch (e) {
+                Debug.log("master_render: setActive failed: " + e.message);
+            }
+        }
+    }
+
+    Debug.log("master_render: Camera not found: " + cameraId);
+    return false;
+}
+
+/**
+ * Apply a lighting rig by enabling its lights and disabling others.
+ *
+ * In a production version, you'd toggle individual light visibility.
+ * Here we assume all lights from the chosen rig are visible and others
+ * are hidden. For simplicity, we iterate all scene lights and enable
+ * only those matching the rig prefix.
+ */
+function selectLightingRig(rigId) {
+    Debug.log("master_render: Selecting lighting rig: " + rigId);
+
+    var numNodes = Scene.getNumNodes();
+    var found = 0;
+
+    for (var i = 0; i < numNodes; i++) {
+        var node = Scene.getNode(i);
+        if (node === null || node === undefined) continue;
+
+        var nodeName = "";
+        try { nodeName = node.getName(); } catch (e) {}
+        var isLight = false;
+        try {
+            var type = String(node.getType()).toLowerCase();
+            if (type.indexOf("light") !== -1) isLight = true;
+        } catch (e) {}
+
+        if (!isLight) continue;
+
+        // Node name format: {rigId}_{lightName}
+        var shouldBeVisible = (nodeName.indexOf(rigId + "_") === 0);
+
+        try {
+            node.setVisible(shouldBeVisible);
+            node.setEnabled(shouldBeVisible);
+            if (shouldBeVisible) found++;
+        } catch (e) {
+            Debug.log("master_render: Failed to toggle light " + nodeName + ": " + e.message);
+        }
+    }
+
+    Debug.log("master_render: Lighting rig " + rigId + " activated with " + found + " lights");
+}
+
+/**
+ * Render the current scene to a file.
+ *
+ * DAZ Script API:
+ *   RenderSettings.setDimensions(width, height)
+ *   RenderSettings.setSamples(numSamples)
+ *   RenderSettings.render(filePath)    -> renders to file, returns true on success
+ *
+ * NOTE: RenderSettings.render() may be synchronous or asynchronous depending
+ * on version. In headless mode it should be synchronous. We wrap in a
+ * try/catch and log the outcome.
+ */
+function renderScene(outputPath, renderSettings) {
+    Debug.log("master_render: Rendering to " + outputPath);
+
+    // Set dimensions
+    try {
+        RenderSettings.setDimensions(renderSettings.width, renderSettings.height);
+    } catch (e) {
+        Debug.log("master_render: setDimensions error: " + e.message);
+    }
+
+    // Set samples
+    try {
+        RenderSettings.setSamples(renderSettings.samples);
+    } catch (e) {
+        Debug.log("master_render: setSamples error: " + e.message);
+    }
+
+    // Execute render
+    var result = RenderSettings.render(outputPath);
+    if (result === false || result === null) {
+        throw new Error("Render returned false for: " + outputPath);
+    }
+
+    Debug.log("master_render: Render completed: " + outputPath);
+    return true;
+}
+
+/**
+ * Calculate total number of renders for progress tracking.
+ */
+function calculateTotalRenders(job) {
+    var total = 0;
+
+    for (var l = 0; l < job.looks.length; l++) {
+        var look = job.looks[l];
+
+        for (var pg = 0; pg < look.pose_group_ids.length; pg++) {
+            var groupId = look.pose_group_ids[pg];
+            var poseGroup = findPoseGroup(job.pose_groups, groupId);
+            if (poseGroup === null) continue;
+
+            for (var p = 0; p < poseGroup.pose_asset_paths.length; p++) {
+                // Resolve cameras
+                var cameras = poseGroup.camera_overrides;
+                if (cameras === null || cameras === undefined) {
+                    var profile = job.camera_profiles[poseGroup.assigned_camera_profile];
+                    if (profile) cameras = profile.cameras;
+                }
+                if (cameras === null || cameras === undefined || !Array.isArray(cameras)) continue;
+
+                // Resolve lighting
+                var lighting = poseGroup.lighting_overrides;
+                if (lighting === null || lighting === undefined) {
+                    var profile = job.camera_profiles[poseGroup.assigned_camera_profile];
+                    if (profile) lighting = profile.lighting;
+                }
+                if (lighting === null || lighting === undefined || !Array.isArray(lighting)) continue;
+
+                total += cameras.length * lighting.length;
+            }
+        }
+    }
+
+    return total;
+}
+
+/**
+ * Find a pose group by ID.
+ */
+function findPoseGroup(poseGroups, groupId) {
+    for (var i = 0; i < poseGroups.length; i++) {
+        if (poseGroups[i].pose_group_id === groupId) {
+            return poseGroups[i];
+        }
+    }
+    return null;
+}
+
+/**
+ * Create a safe filename component from a string (alphanumeric + underscore).
+ */
+function sanitizeFilename(str) {
+    if (!str) return "unknown";
+    return String(str).replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Scene Setup Phase
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function setupScene(job) {
+    Debug.log("master_render: === Scene Setup ===");
+
+    // ── Load base figure ────────────────────────────────────────────────────
+    var figure = loadFigure(job.character.figure_asset_path);
+    Debug.log("master_render: Base figure ready: " + figure.getName());
+
+    // ── Apply shape preset ──────────────────────────────────────────────────
+    if (job.character.shape_preset_path) {
+        applyPresetToFigure(figure, job.character.shape_preset_path, "shape preset");
+    }
+
+    // ── Apply skin material ─────────────────────────────────────────────────
+    if (job.character.skin_material_path) {
+        applyPresetToFigure(figure, job.character.skin_material_path, "skin material");
+    }
+
+    // ── Create cameras ──────────────────────────────────────────────────────
+    var cameras = {};
+    var cameraIds = Object.keys(HARDCODED_CAMERAS);
+    for (var c = 0; c < cameraIds.length; c++) {
+        var id = cameraIds[c];
+        cameras[id] = createCameraNode(id, HARDCODED_CAMERAS[id]);
+    }
+    Debug.log("master_render: " + cameraIds.length + " cameras created");
+
+    // ── Create lighting rigs ────────────────────────────────────────────────
+    var rigs = {};
+    var rigIds = Object.keys(HARDCODED_LIGHTING);
+    for (var r = 0; r < rigIds.length; r++) {
+        var rid = rigIds[r];
+        rigs[rid] = createLightingRig(rid, HARDCODED_LIGHTING[rid]);
+    }
+    Debug.log("master_render: " + rigIds.length + " lighting rigs created");
+
+    // By default, hide all lights. The selectLightingRig function will
+    // enable the appropriate ones per render.
+    // Actually scenario: we create them and leave them visible; the
+    // selectLightingRig function toggles visibility per render pass.
+
+    return {
+        figure: figure,
+        cameras: cameras,
+        rigs: rigs
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Render Loop
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function runRenderLoop(job, sceneState) {
+    Debug.log("master_render: === Render Loop ===");
+
+    var outputDir = job.output_dir;
+    var renderSettings = job.render_settings;
+    var progressLog = job.progress_log;
+    var sessionId = job.session_id;
+    var figure = sceneState.figure;
+
+    var totalRenders = calculateTotalRenders(job);
+    Debug.log("master_render: Total renders planned: " + totalRenders);
+
+    var renderIndex = 0;
+    var successful = 0;
+    var failed = 0;
+
+    // Ensure output directory exists
+    // DAZ Script: FileIO.directoryExists() and FileIO.createDirectory()
+    try {
+        if (!FileIO.directoryExists(outputDir)) {
+            FileIO.createDirectory(outputDir);
+            Debug.log("master_render: Created output directory: " + outputDir);
+        }
+    } catch (e) {
+        Debug.log("master_render: Output directory check: " + e.message);
+    }
+
+    for (var l = 0; l < job.looks.length; l++) {
+        var look = job.looks[l];
+        var triggerPhrase = look.trigger_phrase;
+        var triggerSafe = sanitizeFilename(triggerPhrase);
+
+        Debug.log("master_render: Processing look: " + triggerPhrase);
+
+        // ── Clear previous wardrobe and hair ───────────────────────────────
+        clearWardrobe();
+
+        // ── Apply wardrobe ─────────────────────────────────────────────────
+        if (look.wardrobe_asset_paths && Array.isArray(look.wardrobe_asset_paths)) {
+            for (var w = 0; w < look.wardrobe_asset_paths.length; w++) {
+                var wp = look.wardrobe_asset_paths[w];
+                if (wp) applyWardrobe(wp, figure);
+            }
+        }
+
+        // ── Apply hair ─────────────────────────────────────────────────────
+        var hairPath = look.hair_override_path;
+        if (!hairPath || hairPath === "") {
+            hairPath = job.character.default_hair_asset_path;
+        }
+        if (hairPath) {
+            var loadedHair = Scene.load(hairPath);
+            if (loadedHair === null || loadedHair === undefined) {
+                Debug.log("master_render: Failed to load hair: " + hairPath);
+            }
+            try { Scene.update(); } catch (e) {}
+        }
+
+        // ── Process pose groups ────────────────────────────────────────────
+        for (var pg = 0; pg < look.pose_group_ids.length; pg++) {
+            var groupId = look.pose_group_ids[pg];
+            var poseGroup = findPoseGroup(job.pose_groups, groupId);
+
+            if (poseGroup === null) {
+                Debug.log("master_render: Pose group not found: " + groupId);
+                continue;
+            }
+
+            Debug.log("master_render: Processing pose group: " + groupId);
+
+            // Resolve camera list for this pose group
+            var cameraList = poseGroup.camera_overrides;
+            if (cameraList === null || cameraList === undefined) {
+                var profile = job.camera_profiles[poseGroup.assigned_camera_profile];
+                if (profile) {
+                    cameraList = profile.cameras;
+                }
+            }
+            if (!cameraList || !Array.isArray(cameraList) || cameraList.length === 0) {
+                Debug.log("master_render: No cameras resolved for pose group: " + groupId);
+                continue;
+            }
+
+            // Resolve lighting list for this pose group
+            var lightingList = poseGroup.lighting_overrides;
+            if (lightingList === null || lightingList === undefined) {
+                var profile = job.camera_profiles[poseGroup.assigned_camera_profile];
+                if (profile) {
+                    lightingList = profile.lighting;
+                }
+            }
+            if (!lightingList || !Array.isArray(lightingList) || lightingList.length === 0) {
+                Debug.log("master_render: No lighting resolved for pose group: " + groupId);
+                continue;
+            }
+
+            for (var p = 0; p < poseGroup.pose_asset_paths.length; p++) {
+                var posePath = poseGroup.pose_asset_paths[p];
+                var poseId = sanitizeFilename(posePath.replace(/\.duf$/i, ""));
+
+                // Apply pose
+                Debug.log("master_render: Applying pose: " + posePath);
+                applyPresetToFigure(figure, posePath, "pose");
+
+                for (var ci = 0; ci < cameraList.length; ci++) {
+                    var cameraId = cameraList[ci];
+                    selectCamera(cameraId);
+
+                    for (var li = 0; li < lightingList.length; li++) {
+                        var lightingId = lightingList[li];
+                        selectLightingRig(lightingId);
+
+                        renderIndex++;
+
+                        // Build output filename
+                        var filename = triggerSafe + "__" + poseId + "__" +
+                                       cameraId + "__" + lightingId + ".png";
+                        var fullPath = outputDir;
+                        // Ensure trailing separator
+                        if (fullPath.charAt(fullPath.length - 1) !== "/" &&
+                            fullPath.charAt(fullPath.length - 1) !== "\\") {
+                            fullPath += "/";
+                        }
+                        fullPath += filename;
+
+                        // ── Execute render ─────────────────────────────────
+                        try {
+                            renderScene(fullPath, renderSettings);
+
+                            successful++;
+
+                            // Write progress line
+                            var progLine = "RENDERED\t" + renderIndex + "\t" + totalRenders +
+                                           "\t" + triggerPhrase + "\t" + poseId +
+                                           "\t" + cameraId + "\t" + lightingId;
+                            appendProgressLog(progressLog, progLine);
+
+                        } catch (e) {
+                            failed++;
+
+                            var errMsg = String(e.message || e);
+                            var failLine = "FAILED\t" + renderIndex + "\t" + totalRenders +
+                                           "\t" + triggerPhrase + "\t" + poseId +
+                                           "\t" + cameraId + "\t" + lightingId +
+                                           "\t" + errMsg;
+                            appendProgressLog(progressLog, failLine);
+
+                            Debug.log("master_render: RENDER FAILED [" + renderIndex + "/" +
+                                      totalRenders + "]: " + errMsg);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Write completion line ──────────────────────────────────────────────
+    var completeLine = "COMPLETE\t" + sessionId + "\t" + totalRenders +
+                       "\t" + successful + "\t" + failed;
+    appendProgressLog(progressLog, completeLine);
+
+    Debug.log("master_render: === Render Complete ===");
+    Debug.log("master_render: Total=" + totalRenders +
+              " Successful=" + successful +
+              " Failed=" + failed);
+
+    return { total: totalRenders, successful: successful, failed: failed };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Main Entry Point
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function main() {
+    // ── Read job file ────────────────────────────────────────────────────────
+    if (typeof ScriptArg === "undefined" || ScriptArg === null || ScriptArg === "") {
+        throw new Error("No ScriptArg provided. Use -scriptArg <path_to_job.json>");
+    }
+
+    Debug.log("master_render: Reading job from " + ScriptArg);
+    var job = parseJSONFile(ScriptArg);
+    if (job === null) {
+        throw new Error("Failed to parse job file: " + ScriptArg);
+    }
+
+    // ── Validate required fields ─────────────────────────────────────────────
+    if (!job.character || !job.character.figure_asset_path) {
+        throw new Error("Job missing 'character.figure_asset_path'");
+    }
+    if (!job.output_dir) {
+        throw new Error("Job missing 'output_dir'");
+    }
+    if (!job.render_settings) {
+        throw new Error("Job missing 'render_settings'");
+    }
+    if (!job.pose_groups || !Array.isArray(job.pose_groups)) {
+        throw new Error("Job missing 'pose_groups' array");
+    }
+    if (!job.looks || !Array.isArray(job.looks)) {
+        throw new Error("Job missing 'looks' array");
+    }
+
+    // ── Scene Setup ──────────────────────────────────────────────────────────
+    Debug.log("master_render: Starting scene setup");
+    var sceneState = setupScene(job);
+
+    // ── Render Loop ──────────────────────────────────────────────────────────
+    Debug.log("master_render: Starting render loop");
+    var results = runRenderLoop(job, sceneState);
+
+    // ── Report ───────────────────────────────────────────────────────────────
+    if (results.failed > 0) {
+        Debug.log("master_render: Completed with " + results.failed + " failures out of " +
+                  results.total + " renders");
+    } else {
+        Debug.log("master_render: All " + results.total + " renders completed successfully");
+    }
+
+    Debug.log("master_render: Exiting with code 0");
+    return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Entry point with error handling
+// ═══════════════════════════════════════════════════════════════════════════════
+
+try {
+    var exitCode = main();
+    // Signal success to the calling process
+    // (DAZ Script doesn't have process.exit; we write a sentinel)
+    Debug.log("master_render: Script completed with exit code " + exitCode);
+} catch (e) {
+    var errorMsg = "master_render FATAL: " + e.message + "\n" + e.stack;
+    Debug.log(errorMsg);
+
+    // If we have a progress log path, write the fatal error there too
+    try {
+        if (typeof ScriptArg !== "undefined" && ScriptArg) {
+            var job = parseJSONFile(ScriptArg);
+            if (job && job.progress_log) {
+                var fatalLine = "FATAL\t" + (job.session_id || "0") + "\t0\t0\t0\t" +
+                                (e.message || "Unknown error");
+                appendProgressLog(job.progress_log, fatalLine);
+            }
+        }
+    } catch (logErr) {
+        Debug.log("master_render: Failed to write fatal error to progress log: " + logErr.message);
+    }
+
+    Debug.log("master_render: Exiting with code 1");
+}

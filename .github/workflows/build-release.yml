@@ -1,0 +1,42 @@
+name: Build on Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -e . pyinstaller
+
+      - name: Build executable
+        run: |
+          pyinstaller --noconfirm `
+            --name "daz2lora" `
+            --windowed `
+            --add-data "src/daz2lora/daz_scripts;daz2lora/daz_scripts" `
+            --paths "src" `
+            --distpath "dist" `
+            --workpath "build" `
+            src/daz2lora/main.py
+
+      - name: Package for upload
+        run: |
+          Compress-Archive -Path dist\daz2lora\* -DestinationPath dist\daz2lora-${{ github.ref_name }}.zip
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist\daz2lora-${{ github.ref_name }}.zip

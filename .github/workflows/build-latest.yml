@@ -1,0 +1,52 @@
+name: Build Latest
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -e . pyinstaller
+
+      - name: Build
+        run: |
+          pyinstaller --noconfirm `
+            --name "daz2lora" `
+            --windowed `
+            --add-data "src/daz2lora/daz_scripts;daz2lora/daz_scripts" `
+            --paths "src" `
+            --distpath "dist" `
+            --workpath "build" `
+            src/daz2lora/main.py
+
+      - name: Package
+        run: Compress-Archive -Path dist\daz2lora\* -DestinationPath dist\daz2lora-latest.zip
+
+      - name: Delete old latest release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Create latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build
+          body: "Auto-built from ${{ github.sha }} on main"
+          files: dist/daz2lora-latest.zip
+          prerelease: true
+          make_latest: "false"
