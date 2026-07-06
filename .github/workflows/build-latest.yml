@@ -21,16 +21,32 @@ jobs:
 
       - run: pip install -e . pyinstaller
 
+      - name: Resolve version
+        shell: bash
+        run: |
+          V=$(git describe --tags --always --dirty)
+          # If result is a bare hash (no tags), prefix with "latest-"
+          echo "$V" | grep -Eq '^[0-9a-f]{7,}(-dirty)?$' && V="latest-$V" || true
+          # Strip leading "v" so the display stays as "v{VERSION}"
+          V="${V#v}"
+          echo "$V" > VERSION
+          echo "DAZ2LORA_VERSION=$V" >> $GITHUB_ENV
+
       - name: Build
         run: |
           pyinstaller --noconfirm `
             --name "daz2lora" `
             --windowed `
             --add-data "src/daz2lora/daz_scripts;daz2lora/daz_scripts" `
+            --add-data "VERSION;." `
             --paths "src" `
             --distpath "dist" `
             --workpath "build" `
             src/daz2lora/main.py
+
+      - name: Copy .dsa alongside exe
+        shell: powershell
+        run: Copy-Item src\daz2lora\daz_scripts\daz2lora.dsa dist\daz2lora\
 
       - name: Package
         run: Compress-Archive -Path dist\daz2lora\* -DestinationPath dist\daz2lora-latest.zip

@@ -1,1 +1,1 @@
-VERSION = "0.1.0"
+from daz2lora._version import VERSION as VERSION

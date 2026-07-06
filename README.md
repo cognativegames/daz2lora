@@ -44,7 +44,8 @@ If you'd prefer to avoid SmartScreen entirely, run from source (see below) — n
 
 **Option A — Pre-built executable (no Python needed):**
 1. Download [`daz2lora-latest.zip`](https://github.com/cognativegames/daz2lora/releases/download/latest/daz2lora-latest.zip)
-2. Extract and run `daz2lora.exe`
+2. Extract to a folder (e.g. `C:\daz2lora\`)
+3. Run `daz2lora.exe`
 
 **Option B — From source (no SmartScreen warning):**
 
@@ -65,6 +66,30 @@ python -m venv .venv
 ```
 
 **Option D — Installer (from GitHub Releases):** Download `daz2lora_setup.exe` from the [Releases page](https://github.com/cognativegames/daz2lora/releases) for stable releases (installs with Start Menu shortcut and uninstaller).
+
+### Launch from inside DAZ Studio (Optional)
+
+The zip includes a `daz2lora.dsa` script that sits inside DAZ Studio and auto-detects your DAZ install path and content libraries so you don't have to type them in.
+
+**Install (one-time):**
+1. Open DAZ Studio
+2. In the **Content Library** pane, navigate to the folder where you extracted the zip
+3. Find `daz2lora.dsa`, right-click it → **Create Custom Action**
+4. In the dialog, set **Root Menu** to `Scripts`, then **Accept**
+
+Now a **"DAZ-to-LoRA"** entry appears in the top‑bar **Scripts** menu. Click it anytime to launch the app with your DAZ paths pre‑configured.
+
+**Or just drag-and-drop:**
+1. Drag `daz2lora.dsa` from the zip folder into DAZ Studio's viewport
+2. The script runs immediately — it launches the app and registers itself in the menu for next time
+
+**What it does:**
+- Detects your DAZ Studio install path → no need to browse for `DAZStudio.exe`
+- Reads your content library directories → no need to add them manually
+- Writes the config so the app skips the Setup screen and goes straight to project selection
+- Default workspace: `Documents\daz2lora\` (change later in the app's Setup screen)
+
+The `.dsa` works alongside any launch method — you can still run `daz2lora.exe` directly and use the Setup screen as before.
 
 ## Usage
 
@@ -196,7 +221,8 @@ src/daz2lora/
 │   └── training_launcher.py    # kohya_ss subprocess wrapper
 ├── daz_scripts/
 │   ├── catalog_export.dsa      # Content library walker (DAZ Script)
-│   └── master_render.dsa       # Unattended render loop (DAZ Script)
+│   ├── master_render.dsa       # Unattended render loop (DAZ Script)
+│   └── daz2lora.dsa            # Launcher: auto-detects DAZ paths, opens app
 ├── ui/
 │   ├── main_window.py          # QStackedWidget navigation
 │   ├── setup_screen.py

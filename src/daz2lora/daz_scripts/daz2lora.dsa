@@ -1,0 +1,124 @@
+(function() {
+    "use strict";
+
+    var APP_NAME = "DAZ-to-LoRA";
+    var EXE_NAME = "daz2lora.exe";
+    var ALT_MAC_NAME = "daz2lora";
+    var CONFIG_NAME = "_daz2lora_auto.json";
+
+    function log(msg) {
+        Debug.log("daz2lora_launcher: " + msg);
+    }
+
+    function getScriptDir() {
+        return new DzFileInfo(getScriptFileName()).path();
+    }
+
+    function getDazStudioPath() {
+        try {
+            var resPath = App.getResourcesPath();
+            if (resPath) {
+                var norm = String(resPath).replace(/\\/g, "/");
+                var idx = norm.indexOf("/resources");
+                if (idx !== -1) return norm.substring(0, idx);
+                return norm;
+            }
+        } catch (e) {
+            log("Could not detect DAZ path: " + e.message);
+        }
+        return "";
+    }
+
+    function getContentRoots() {
+        var roots = [];
+        try {
+            var mgr = App.getContentMgr();
+            if (!mgr) return roots;
+            var count = mgr.getNumContentDirectories(0);
+            for (var i = 0; i < count; i++) {
+                var folder = mgr.getContentDirectory(i, 0);
+                if (!folder) continue;
+                var path = folder.path || folder.getPath ? folder.getPath() : String(folder);
+                if (path && roots.indexOf(path) === -1) roots.push(path);
+            }
+        } catch (e) {
+            log("Error reading content dirs: " + e.message);
+        }
+        return roots;
+    }
+
+    function writeConfig(scriptDir, dazPath, contentRoots) {
+        var config = JSON.stringify({
+            daz_studio_path: dazPath,
+            content_library_roots: contentRoots,
+            workspace_root: "",
+            source: "daz_script"
+        }, null, 2);
+        var configPath = scriptDir + "/" + CONFIG_NAME;
+        try {
+            var result = FileIO.writeStringToFile(config, configPath);
+            if (result === false || result === null) {
+                log("Failed to write config to " + configPath);
+                return false;
+            }
+            log("Config written: " + configPath);
+            return true;
+        } catch (e) {
+            log("Error writing config: " + e.message);
+            return false;
+        }
+    }
+
+    function launch(scriptDir) {
+        var exePath = scriptDir + "/" + EXE_NAME;
+        var url = "file:///" + exePath.replace(/\\/g, "/");
+        try {
+            log("Launching: " + url);
+            App.showURL(url);
+            return true;
+        } catch (e) {
+            log("Launch failed: " + e.message);
+            return false;
+        }
+    }
+
+    function registerAction(scriptDir) {
+        try {
+            var scriptPath = getScriptFileName();
+            var mgr = MainWindow.getActionMgr();
+            var n = mgr.getNumCustomActions();
+            for (var i = 0; i < n; i++) {
+                if (mgr.getCustomActionFile(i) === scriptPath) {
+                    log("Already in Scripts menu");
+                    return;
+                }
+            }
+            var uid = "daz2lora_" + String(Date.now());
+            var icon = scriptDir + "/daz2lora.png";
+            mgr.addCustomAction(uid, APP_NAME, "Generate SDXL LoRAs from DAZ characters", scriptPath, icon);
+            log("Registered in Scripts menu");
+        } catch (e) {
+            log("Menu registration skipped: " + e.message);
+        }
+    }
+
+    log("Starting...");
+
+    var dir = getScriptDir();
+    log("Dir: " + dir);
+
+    var dazPath = getDazStudioPath();
+    var contentRoots = getContentRoots();
+
+    if (dazPath) log("DAZ: " + dazPath);
+    else log("Warning: DAZ path not detected");
+
+    if (contentRoots.length > 0) log("Roots: " + JSON.stringify(contentRoots));
+    else log("Warning: No content roots found");
+
+    writeConfig(dir, dazPath, contentRoots);
+    registerAction(dir);
+    launch(dir);
+
+    log("Done");
+})();

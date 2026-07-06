@@ -85,7 +85,7 @@ run-pc:  ## Rsync code to PC, launch the app (full pipeline)
 build-pc:  ## Build daz2lora.exe on PC, pull it back to dist/
 	rsync $(RSYNC_OPTS) ./ $(PC_USER)@$(PC_TARGET):"$(PC_DIR)/"
 	ssh $(PC_USER)@$(PC_TARGET) \
-		"cd $(PC_DIR) && .venv\Scripts\pip install pyinstaller && .venv\Scripts\pyinstaller --noconfirm --name $(APP_NAME) --windowed --add-data src/$(APP_NAME)/daz_scripts;$(APP_NAME)/daz_scripts --paths src --distpath dist --workpath build src/$(APP_NAME)/main.py"
+		"cd $(PC_DIR) && .venv\Scripts\pip install pyinstaller && .venv\Scripts\pyinstaller --noconfirm --name $(APP_NAME) --windowed --add-data src/$(APP_NAME)/daz_scripts;$(APP_NAME)/daz_scripts --paths src --distpath dist --workpath build src/$(APP_NAME)/main.py && copy src\$(APP_NAME)\daz_scripts\daz2lora.dsa dist\$(APP_NAME)\"
 	rsync -avz $(PC_USER)@$(PC_TARGET):"$(PC_DIR)/dist/" ./dist/
 ifeq ($(OS),Windows_NT)
 	@echo "✓ dist/$(APP_NAME)/$(APP_NAME).exe"
