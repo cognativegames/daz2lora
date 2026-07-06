@@ -1,16 +1,35 @@
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 from typing import Optional
 
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QApplication,
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
 from daz2lora import VERSION
-from daz2lora.utils.updater import UpdateCheckResult, check_for_updates, apply_update
+from daz2lora.ui.kohya_install_dialog import KohyaInstallDialog
+from daz2lora.utils.kohya_setup import (
+    find_kohya_ss,
+    suggest_destination,
+    verify_kohya_ss,
+)
+from daz2lora.utils.updater import UpdateCheckResult, apply_update, check_for_updates
 
 
 class SetupScreen(QWidget):
@@ -77,11 +96,20 @@ class SetupScreen(QWidget):
         form = QFormLayout(group)
 
         self.daz_path = QLineEdit()
+        self.daz_path.setPlaceholderText("Auto-detecting...")
         browse_daz = QPushButton("Browse...")
         browse_daz.clicked.connect(lambda: self._browse_file(self.daz_path, "Select DAZ Studio Executable", False))
+
+        detect_daz = QPushButton("Detect")
+        detect_daz.clicked.connect(self._detect_daz)
+        detect_daz.setStyleSheet(
+            "QPushButton { padding: 4px 12px; }"
+        )
+
         row = QHBoxLayout()
         row.addWidget(self.daz_path)
         row.addWidget(browse_daz)
+        row.addWidget(detect_daz)
         form.addRow("Executable Path:", row)
 
         form.addRow(QLabel("Content Library Roots:"))
@@ -148,15 +176,38 @@ class SetupScreen(QWidget):
         group = QGroupBox("Training Configuration")
         form = QFormLayout(group)
 
+        self.kohya_status = QLabel("")
         self.kohya_path = QLineEdit()
+        self.kohya_path.setPlaceholderText("Not found — click Install or Browse")
         browse_k = QPushButton("Browse...")
-        browse_k.clicked.connect(lambda: self._browse_file(self.kohya_path, "Select kohya_ss Install Directory", True))
+        browse_k.clicked.connect(lambda: self._browse_file(self.kohya_path, "Select kohya_ss Directory", True))
+
+        install_k = QPushButton("Install kohya_ss")
+        install_k.setObjectName("actionBtn")
+        install_k.setStyleSheet(
+            "QPushButton { background-color: #0d7377; border-color: #0d7377; "
+            "color: white; padding: 4px 16px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #0f8a8e; }"
+        )
+        install_k.clicked.connect(self._install_kohya)
+
+        detect_k = QPushButton("Detect")
+        detect_k.clicked.connect(self._detect_kohya)
+
         row = QHBoxLayout()
-        row.addWidget(self.kohya_path)
+        row.addWidget(self.kohya_path, 1)
         row.addWidget(browse_k)
-        form.addRow("kohya_ss Path:", row)
+        row.addWidget(detect_k)
+        row.addWidget(install_k)
+        form.addRow("kohya_ss:", self.kohya_status)
+        form.addRow("", row)
+
+        _success_color = "color: #0d7377; font-weight: bold;"
+        _error_color = "color: #c0392b;"
+        form.addRow(QLabel(""), QLabel(""))  # spacer
 
         self.sdxl_path = QLineEdit()
+        self.sdxl_path.setPlaceholderText("/path/to/model.safetensors")
         browse_s = QPushButton("Browse...")
         browse_s.clicked.connect(lambda: self._browse_file(self.sdxl_path, "Select SDXL Checkpoint", False))
         row = QHBoxLayout()
@@ -176,14 +227,12 @@ class SetupScreen(QWidget):
         help_row.addStretch()
         help_row.addWidget(self._make_help_button(
             "Paths for model training.\n\n"
-            "• kohya_ss Path: Your kohya_ss or sd-scripts installation "
-            "(the folder containing sdxl_train_network.py).\n"
+            "• kohya_ss: The folder containing sdxl_train_network.py.\n"
+            "  Click Install to auto-download and set it up.\n"
             "• SDXL Checkpoint: A .safetensors base model. Download from "
             "CivitAI or HuggingFace.\n"
             "• ComfyUI LoRAs (optional): Finished LoRAs are copied here "
-            "automatically.\n\n"
-            "See the project README for recommended checkpoints and "
-            "kohya_ss setup."
+            "automatically."
         ))
         form.addRow(help_row)
 
@@ -326,6 +375,13 @@ class SetupScreen(QWidget):
         self.github_repo_input.setText(cfg.github_repo)
         self._populate_lib_list()
 
+        self._update_kohya_status()
+
+        if not cfg.daz_studio_path:
+            self._detect_daz()
+        if not cfg.kohya_ss_path:
+            self._detect_kohya()
+
     def _populate_lib_list(self) -> None:
         self.lib_list.clear()
         for root in self.main_window.config.content_library_roots:
@@ -378,3 +434,81 @@ class SetupScreen(QWidget):
 
         self.main_window.set_config(config)
         self.main_window.navigate_next()
+
+    @staticmethod
+    def _common_daz_paths() -> list[Path]:
+        candidates: list[Path] = []
+        if platform.system() == "Windows":
+            for drive in ("C:", "D:"):
+                base = Path(f"{drive}/")
+                program_dirs = (
+                    base / "Program Files",
+                    base / "Program Files (x86)",
+                )
+                for pd in program_dirs:
+                    for name in ("DAZStudio4", "DAZ 3D/DAZStudio4"):
+                        full = pd / name / "DAZStudio.exe"
+                        candidates.append(full)
+                        full64 = pd / name / "DAZStudio64.exe"
+                        candidates.append(full64)
+        elif platform.system() == "Darwin":
+            candidates.append(Path("/Applications/DAZ Studio.app"))
+        return candidates
+
+    def _detect_daz(self) -> None:
+        for p in self._common_daz_paths():
+            if p.is_file():
+                self.daz_path.setText(str(p))
+                self.daz_path.setStyleSheet("")
+                return
+        QMessageBox.information(
+            self, "DAZ Studio",
+            "DAZ Studio not found in common locations.\n"
+            "Browse to select DAZStudio.exe manually."
+        )
+
+    def _update_kohya_status(self) -> None:
+        path = self.kohya_path.text().strip()
+        if not path:
+            self.kohya_status.setText("Not configured")
+            self.kohya_status.setStyleSheet("color: #888;")
+            return
+        ok = verify_kohya_ss(path)
+        self.kohya_status.setText(
+            "Ready" if ok
+            else "Not found — check path or click Install"
+        )
+        self.kohya_status.setStyleSheet(
+            "color: #0d7377; font-weight: bold;" if ok
+            else "color: #c0392b;"
+        )
+
+    def _detect_kohya(self) -> None:
+        found = find_kohya_ss()
+        if found is not None:
+            self.kohya_path.setText(str(found))
+            self._update_kohya_status()
+            return
+        QMessageBox.information(
+            self, "kohya_ss",
+            "kohya_ss not found in common locations.\n"
+            "Click \"Install kohya_ss\" to download and set it up, "
+            "or browse to an existing installation."
+        )
+
+    def _install_kohya(self) -> None:
+        dest = self.kohya_path.text().strip()
+        if not dest:
+            dest = str(suggest_destination(
+                self.workspace_root.text().strip() or None
+            ))
+            self.kohya_path.setText(dest)
+
+        dialog = KohyaInstallDialog(dest, self)
+        dialog.install_completed.connect(self._on_kohya_installed)
+        dialog.exec()
+
+    def _on_kohya_installed(self, success: bool, path: str) -> None:
+        if success:
+            self.kohya_path.setText(path)
+        self._update_kohya_status()

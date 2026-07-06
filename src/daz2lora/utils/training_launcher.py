@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 
 from daz2lora.models.datamodels import CharacterProject, TrainingHistoryEntry
 from daz2lora.utils.config import AppConfig
+from daz2lora.utils.kohya_setup import find_venv_python
 
 
 class TrainingWorker(threading.Thread):
@@ -95,6 +96,15 @@ class TrainingLauncher(QObject):
             self.completed.emit(False, f"Trainer not found: {trainer}")
             return
 
+        python = find_venv_python(kohya_path)
+        if python is None:
+            self.completed.emit(
+                False,
+                "Python venv not found in kohya_ss install.\n"
+                "Run: uv sync  (inside kohya_ss directory)",
+            )
+            return
+
         output_dir = (
             Path(config.workspace_root)
             / "projects"
@@ -106,7 +116,7 @@ class TrainingLauncher(QObject):
         output_name = f"{project.character.character_id}_v{project.next_version}"
 
         cmd = [
-            str(kohya_path / "venv" / "bin" / "python"),
+            str(python),
             str(trainer),
             f"--pretrained_model_name_or_path={config.sdxl_checkpoint_path}",
             f"--train_data_dir={dataset_root}",
