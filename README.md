@@ -17,23 +17,46 @@ Install these on your Windows PC. The app needs them at runtime.
 | **ComfyUI** | Optional | [comfy.org/download](https://comfy.org/download) — desktop app. Done screen can copy LoRA into Comfy's `models/loras/`. |
 | **NVIDIA GPU** | For training | 8+ GB VRAM recommended for SDXL. DAZ Iray uses CUDA. |
 
+## Downloads
+
+Latest automated builds (updated on every push to `master`):
+
+| Artifact | Link |
+|----------|------|
+| **Windows executable** (`.exe`) | [daz2lora-latest.zip](https://github.com/cognativegames/daz2lora/releases/download/latest/daz2lora-latest.zip) |
+| Source code (zip) | [Source code (zip)](https://github.com/cognativegames/daz2lora/archive/refs/tags/latest.zip) |
+| Source code (tar.gz) | [Source code (tar.gz)](https://github.com/cognativegames/daz2lora/archive/refs/tags/latest.tar.gz) |
+| All releases | [Releases page](https://github.com/cognativegames/daz2lora/releases) |
+
+### About the `.exe` and SmartScreen
+
+The `daz2lora.exe` is built with [PyInstaller](https://pyinstaller.org/), which bundles the Python interpreter and all dependencies into a single Windows executable. It's the same Python code you'd run from source — just packaged for convenience so you don't need to install Python.
+
+Windows SmartScreen will show "Windows protected your PC" / "Unknown publisher" the first time you run it. **This is normal and expected.** The executable isn't code-signed because code signing certificates cost ~$300/year, and this is free open source software. The warning doesn't mean the software is unsafe — it means Microsoft hasn't seen this binary before.
+
+To run it anyway: click **More info** → **Run anyway**.
+
+If you'd prefer to avoid SmartScreen entirely, run from source (see below) — no `.exe` involved.
+
+> **Future:** If there's enough demand, we may apply to [SignPath Foundation](https://signpath.org/) (free code signing for open source projects). That would replace "Unknown publisher" with "SignPath Foundation" and reduce the warning severity. This project would also accept sponsorship for a proper code signing certificate tied to the `cognativegames` publisher name.
+
 ## Quick Start (Windows)
 
-**Zero-click** — the app bootstraps itself on first run:
+**Option A — Pre-built executable (no Python needed):**
+1. Download [`daz2lora-latest.zip`](https://github.com/cognativegames/daz2lora/releases/download/latest/daz2lora-latest.zip)
+2. Extract and run `daz2lora.exe`
+
+**Option B — From source (no SmartScreen warning):**
 
 ```powershell
-git clone <this-repo> daz2lora
+git clone https://github.com/cognativegames/daz2lora.git
 cd daz2lora
 python src/daz2lora/main.py   # auto-creates .venv, installs deps, then launches
 ```
 
-Or use the setup script:
+Or double-click `daz2lora.bat` (included in the repo).
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
-```
-
-Or manually:
+**Option C — Manual setup:**
 
 ```powershell
 python -m venv .venv
@@ -41,7 +64,7 @@ python -m venv .venv
 .venv\Scripts\python -m daz2lora.main
 ```
 
-Or install via the [pre-built installer](#windows-installer) (no Python needed).
+**Option D — Installer (from GitHub Releases):** Download `daz2lora_setup.exe` from the [Releases page](https://github.com/cognativegames/daz2lora/releases) for stable releases (installs with Start Menu shortcut and uninstaller).
 
 ## Usage
 

@@ -58,6 +58,20 @@ class SetupScreen(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(scroll)
 
+    def _make_help_button(self, text: str) -> QPushButton:
+        btn = QPushButton("?")
+        btn.setFixedSize(22, 22)
+        btn.setToolTip("Click for help")
+        btn.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #0d7377; color: white; border-radius: 11px;"
+            "  font-weight: bold; font-size: 11px; border: none;"
+            "}"
+            "QPushButton:hover { background-color: #0f8a8e; }"
+        )
+        btn.clicked.connect(lambda checked, t=text: QMessageBox.information(self, "Help", t))
+        return btn
+
     def _build_daz_group(self, layout: QVBoxLayout) -> None:
         group = QGroupBox("DAZ Studio Configuration")
         form = QFormLayout(group)
@@ -89,6 +103,20 @@ class SetupScreen(QWidget):
         self.renders_per_session.setRange(1, 500)
         form.addRow("Renders per Session:", self.renders_per_session)
 
+        help_row = QHBoxLayout()
+        help_row.addStretch()
+        help_row.addWidget(self._make_help_button(
+            "DAZ Studio must be installed on this PC.\n\n"
+            "• Executable Path: Full path to DAZStudio.exe "
+            "(usually C:\\Program Files\\DAZ 3D\\DAZStudio4\\DAZStudio.exe)\n"
+            "• Content Library Roots: Directories where your DAZ content "
+            "(characters, outfits, props) live. The app scans these to "
+            "find your assets.\n"
+            "• Renders per Session: Maximum renders before the app pauses.\n\n"
+            "See the project README for DAZ Studio setup instructions."
+        ))
+        form.addRow(help_row)
+
         layout.addWidget(group)
 
     def _build_workspace_group(self, layout: QVBoxLayout) -> None:
@@ -101,6 +129,19 @@ class SetupScreen(QWidget):
         row.addWidget(self.workspace_root)
         row.addWidget(browse_ws)
         form.addRow("Workspace Root:", row)
+
+        help_row = QHBoxLayout()
+        help_row.addStretch()
+        help_row.addWidget(self._make_help_button(
+            "All project files, renders, captions, and trained LoRAs are "
+            "stored here.\n\n"
+            "Pick a folder with plenty of free space — SDXL datasets and "
+            "renders add up fast.\n\n"
+            "Each character project gets its own subfolder under "
+            "./projects/."
+        ))
+        form.addRow(help_row)
+
         layout.addWidget(group)
 
     def _build_training_group(self, layout: QVBoxLayout) -> None:
@@ -131,6 +172,21 @@ class SetupScreen(QWidget):
         row.addWidget(browse_c)
         form.addRow("ComfyUI LoRAs:", row)
 
+        help_row = QHBoxLayout()
+        help_row.addStretch()
+        help_row.addWidget(self._make_help_button(
+            "Paths for model training.\n\n"
+            "• kohya_ss Path: Your kohya_ss or sd-scripts installation "
+            "(the folder containing sdxl_train_network.py).\n"
+            "• SDXL Checkpoint: A .safetensors base model. Download from "
+            "CivitAI or HuggingFace.\n"
+            "• ComfyUI LoRAs (optional): Finished LoRAs are copied here "
+            "automatically.\n\n"
+            "See the project README for recommended checkpoints and "
+            "kohya_ss setup."
+        ))
+        form.addRow(help_row)
+
         layout.addWidget(group)
 
     def _build_render_group(self, layout: QVBoxLayout) -> None:
@@ -151,6 +207,18 @@ class SetupScreen(QWidget):
         self.render_samples.setRange(8, 512)
         self.render_samples.setSingleStep(8)
         form.addRow("Samples:", self.render_samples)
+
+        help_row = QHBoxLayout()
+        help_row.addStretch()
+        help_row.addWidget(self._make_help_button(
+            "DAZ Studio render output settings.\n\n"
+            "• Width / Height: Output resolution. 1024x1024 is standard "
+            "for SDXL training.\n"
+            "• Samples: Render quality. Higher = better but slower. "
+            "32-64 is a good starting point.\n\n"
+            "These map directly to DAZ Studio's render settings."
+        ))
+        form.addRow(help_row)
 
         layout.addWidget(group)
 
@@ -183,6 +251,18 @@ class SetupScreen(QWidget):
         self.update_status = QLabel("")
         self.update_status.setWordWrap(True)
         form.addRow(self.update_status)
+
+        help_row = QHBoxLayout()
+        help_row.addStretch()
+        help_row.addWidget(self._make_help_button(
+            "Check for new versions of the app.\n\n"
+            "• Channel: 'stable' for tagged releases, 'latest' for "
+            "auto-builds from the master branch.\n"
+            "• Check for Updates: Queries GitHub for available versions.\n"
+            "• Apply Update: Downloads and replaces app files, then "
+            "restarts."
+        ))
+        form.addRow(help_row)
 
         self._update_result: Optional[UpdateCheckResult] = None
         layout.addWidget(group)
