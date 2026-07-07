@@ -13,10 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from daz2lora.utils.kohya_setup import (
-    check_prerequisites,
-    install_kohya_ss,
-)
+from daz2lora.utils.kohya_setup import install_kohya_ss
 
 
 class _InstallWorker(QObject):
@@ -30,15 +27,6 @@ class _InstallWorker(QObject):
     def run(self) -> None:
         def log(msg: str) -> None:
             self.log.emit(msg)
-
-        log("Checking prerequisites...")
-        ok = check_prerequisites(log)
-        if not ok:
-            self.log.emit("\nInstall git and/or uv first:\n"
-                          "  git: https://git-scm.com\n"
-                          "  uv:  pip install uv")
-            self.finished.emit(False, "Missing prerequisites")
-            return
 
         ok = install_kohya_ss(self.destination, log)
         self.finished.emit(ok, self.destination)
@@ -98,7 +86,7 @@ class KohyaInstallDialog(QDialog):
             self.log_output.appendPlainText(f"\n✓ kohya_ss installed at:\n  {path}")
         else:
             self.log_output.appendPlainText(
-                "\n✗ Installation failed. Check the log above."
+                "\n✗ Installation failed. See above for details."
             )
 
     def _on_close(self) -> None:

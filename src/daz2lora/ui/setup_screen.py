@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import platform
+import sys
+import webbrowser
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
 from daz2lora import VERSION
 from daz2lora.ui.kohya_install_dialog import KohyaInstallDialog
 from daz2lora.utils.kohya_setup import (
+    _get_python,
     find_kohya_ss,
     suggest_destination,
     verify_kohya_ss,
@@ -488,15 +491,30 @@ class SetupScreen(QWidget):
         if found is not None:
             self.kohya_path.setText(str(found))
             self._update_kohya_status()
-            return
-        QMessageBox.information(
-            self, "kohya_ss",
-            "kohya_ss not found in common locations.\n"
-            "Click \"Install kohya_ss\" to download and set it up, "
-            "or browse to an existing installation."
-        )
 
     def _install_kohya(self) -> None:
+        if _get_python() is None:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("Python Required")
+            msg.setText("kohya_ss installation requires Python 3.10+.")
+            if getattr(sys, "frozen", False):
+                msg.setInformativeText(
+                    "This app bundles its own Python, but kohya_ss needs a "
+                    "system Python to create its virtual environment.\n\n"
+                    "Install Python from python.org, then retry."
+                )
+            else:
+                msg.setInformativeText(
+                    "Install a system Python 3.10+ from python.org, then retry."
+                )
+            download_btn = msg.addButton("Download Python", QMessageBox.ActionRole)
+            msg.addButton("Cancel", QMessageBox.RejectRole)
+            msg.exec()
+            if msg.clickedButton() == download_btn:
+                webbrowser.open("https://www.python.org/downloads/")
+            return
+
         dest = self.kohya_path.text().strip()
         if not dest:
             dest = str(suggest_destination(

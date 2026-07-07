@@ -3,12 +3,26 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from daz2lora.models.datamodels import CharacterProject
@@ -189,6 +203,22 @@ class DatasetScreen(QWidget):
         self.mixed_precision_combo.addItems(["fp16", "bf16", "no"])
         form.addRow("Mixed Precision:", self.mixed_precision_combo)
 
+        self.sample_interval_spin = QSpinBox()
+        self.sample_interval_spin.setRange(0, 5000)
+        self.sample_interval_spin.setSingleStep(50)
+        self.sample_interval_spin.setValue(0)
+        self.sample_interval_spin.setSpecialValueText("Off")
+        form.addRow("Sample Every N Steps:", self.sample_interval_spin)
+
+        self.sample_prompts_edit = QPlainTextEdit()
+        self.sample_prompts_edit.setPlaceholderText(
+            "One prompt per line, e.g.\n"
+            "a photo of <tok1> <tok2> character\n"
+            "a photo of <tok1> <tok2> character smiling"
+        )
+        self.sample_prompts_edit.setMaximumHeight(80)
+        form.addRow("Sample Prompts:", self.sample_prompts_edit)
+
         training_layout.addLayout(form)
 
         self.mode_group = QGroupBox("Training Mode")
@@ -258,6 +288,16 @@ class DatasetScreen(QWidget):
         time_row.addWidget(self.remaining_label)
         progress_layout.addLayout(time_row)
 
+        self.sample_area = QScrollArea()
+        self.sample_area.setWidgetResizable(True)
+        self.sample_area.setMaximumHeight(200)
+        self.sample_area.setVisible(False)
+        self.sample_container = QWidget()
+        self.sample_grid = QHBoxLayout(self.sample_container)
+        self.sample_grid.setSpacing(8)
+        self.sample_area.setWidget(self.sample_container)
+        progress_layout.addWidget(self.sample_area)
+
         self.cancel_btn = QPushButton("Cancel Training")
         self.cancel_btn.setStyleSheet(
             "QPushButton { background-color: #c43e3e; border-color: #c43e3e; color: white; }"
@@ -272,7 +312,13 @@ class DatasetScreen(QWidget):
         self._launcher.log_line.connect(self._on_log_line)
         self._launcher.progress.connect(self._on_progress)
         self._launcher.completed.connect(self._on_training_completed)
+        self._launcher.sample_available.connect(self._on_sample_available)
         self.main_window.project_changed.connect(self._on_project_changed)
+
+        self._sample_dir: Path | None = None
+        self._sample_timer = QTimer(self)
+        self._sample_timer.timeout.connect(self._poll_samples)
+        self._seen_samples: set[str] = set()
 
     def on_enter(self) -> None:
         self._refresh()
@@ -505,6 +551,8 @@ class DatasetScreen(QWidget):
             "save_every": self.save_every_spin.value(),
             "optimizer": self.optimizer_combo.currentText(),
             "mixed_precision": self.mixed_precision_combo.currentText(),
+            "sample_every_n_steps": self.sample_interval_spin.value(),
+            "sample_prompts": self.sample_prompts_edit.toPlainText(),
             "continue_from_prior": project.trained_lora_path is not None,
             "retrain_from_scratch": self._retrain_mode,
         }
@@ -518,8 +566,49 @@ class DatasetScreen(QWidget):
         self._elapsed_timer.timeout.connect(self._update_elapsed, Qt.UniqueConnection)
         self._elapsed_timer.start(1000)
 
+        self._sample_dir = None
+        self._seen_samples.clear()
+        self.sample_area.setVisible(False)
+        self._clear_sample_grid()
+
+        if self.sample_interval_spin.value() > 0:
+            output_dir = Path(config.workspace_root) / "projects" / project.character.character_id / "lora"
+            self._sample_dir = output_dir / "samples"
+            self._sample_dir.mkdir(parents=True, exist_ok=True)
+            self._sample_timer.start(5000)
+
         self.train_btn.setEnabled(False)
         self._launcher.launch(project, config, params, project.dataset_root_path)
+
+    def _on_sample_available(self, path: str) -> None:
+        self._add_sample_thumbnail(path)
+
+    def _poll_samples(self) -> None:
+        if self._sample_dir is None or not self._sample_dir.is_dir():
+            return
+        for f in sorted(self._sample_dir.iterdir()):
+            if f.suffix.lower() in (".png", ".jpg", ".jpeg") and f.name not in self._seen_samples:
+                self._seen_samples.add(f.name)
+                self._add_sample_thumbnail(str(f))
+
+    def _add_sample_thumbnail(self, path: str) -> None:
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            return
+        thumb = pixmap.scaled(160, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        label = QLabel()
+        label.setPixmap(thumb)
+        label.setToolTip(path)
+        label.setStyleSheet("QLabel { border: 1px solid #555; border-radius: 4px; }")
+        self.sample_grid.addWidget(label)
+        self.sample_area.setVisible(True)
+        self.sample_area.ensureWidgetVisible(label)
+
+    def _clear_sample_grid(self) -> None:
+        while self.sample_grid.count():
+            item = self.sample_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
     def _on_cancel_training(self) -> None:
         self._launcher.cancel()
@@ -556,13 +645,14 @@ class DatasetScreen(QWidget):
     def _on_training_completed(self, success: bool, message: str) -> None:
         if self._elapsed_timer:
             self._elapsed_timer.stop()
+        self._sample_timer.stop()
 
         self._retrain_mode = False
         self.train_btn.setEnabled(True)
         self.progress_bar.setValue(100 if success else 0)
 
         if success:
-            self.log_output.appendPlainText(f"\n--- Training completed successfully ---")
+            self.log_output.appendPlainText("\n--- Training completed successfully ---")
             self.log_output.appendPlainText(f"Output: {message}")
 
             self.view_lora_btn.setVisible(True)

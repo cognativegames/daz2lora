@@ -37,6 +37,21 @@ def _read_version_file() -> str | None:
     return None
 
 
+def _git_hash() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True,
+            cwd=Path(__file__).resolve().parent,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def resolve_version() -> str:
     env_ver = os.environ.get("DAZ2LORA_VERSION")
     if env_ver:
@@ -49,6 +64,10 @@ def resolve_version() -> str:
     bundled = _read_version_file()
     if bundled:
         return bundled
+
+    githash = _git_hash()
+    if githash:
+        return f"0.0.0+{githash}"
 
     return "0.0.0"
 

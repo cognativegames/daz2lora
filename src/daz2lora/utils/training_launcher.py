@@ -73,6 +73,7 @@ class TrainingLauncher(QObject):
     log_line = Signal(str)
     progress = Signal(int, int)
     completed = Signal(bool, str)
+    sample_available = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -136,6 +137,18 @@ class TrainingLauncher(QObject):
             "--min_bucket_reso=512",
             "--max_bucket_reso=2048",
         ]
+
+        sample_interval = params.get("sample_every_n_steps", 0)
+        if sample_interval > 0:
+            sample_dir = output_dir / "samples"
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            cmd.append(f"--sample_every_n_steps={sample_interval}")
+            cmd.append(f"--sample_output_dir={sample_dir}")
+            prompts = params.get("sample_prompts", "").strip()
+            if prompts:
+                prompts_path = sample_dir / "prompts.txt"
+                prompts_path.write_text(prompts)
+                cmd.append(f"--sample_prompts={prompts_path}")
 
         if params.get("retrain_from_scratch"):
             pass
